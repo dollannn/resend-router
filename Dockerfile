@@ -15,17 +15,17 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=cache,id=resend-router-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=resend-router-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=resend-router-target,target=/app/target \
+RUN --mount=type=cache,id=s/ad11ce35-b3d4-4efa-ba2a-b848912f8755-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/ad11ce35-b3d4-4efa-ba2a-b848912f8755-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=s/ad11ce35-b3d4-4efa-ba2a-b848912f8755-/app/target,target=/app/target \
     cargo chef cook --release --locked --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
 COPY src ./src
-RUN --mount=type=cache,id=resend-router-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=resend-router-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=resend-router-target,target=/app/target \
+RUN --mount=type=cache,id=s/ad11ce35-b3d4-4efa-ba2a-b848912f8755-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/ad11ce35-b3d4-4efa-ba2a-b848912f8755-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=s/ad11ce35-b3d4-4efa-ba2a-b848912f8755-/app/target,target=/app/target \
     cargo build --release --locked && \
     cp target/release/resend-router /usr/local/bin/resend-router
 
