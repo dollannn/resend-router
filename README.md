@@ -60,6 +60,8 @@ Destination fields:
 
 Matching semantics are additive: if `from_domains`, `to_domains`, and `event_types` are all present, all configured constraints must match. Domain matching is exact after lowercasing and trimming a leading `@`; wildcards are not expanded. Use `catch_all: true` for an intentional catch-all destination.
 
+Destination config is loaded at startup. After a restart or redeploy, retrying jobs use the latest configured URL for their `name`; keep destination names stable when changing URLs.
+
 ## Outbound delivery verification
 
 Downstream destinations should verify router-owned signatures instead of Resend signatures, because retries may happen hours or days after the original Resend delivery.

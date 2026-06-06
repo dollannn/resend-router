@@ -89,6 +89,13 @@ impl Config {
         StdDuration::from_secs(self.worker_drain_timeout_secs)
     }
 
+    pub fn destination_url(&self, destination_name: &str) -> Option<&str> {
+        self.destinations
+            .iter()
+            .find(|destination| destination.name == destination_name)
+            .map(|destination| destination.url.as_str())
+    }
+
     fn validate(&self) -> AppResult<()> {
         if self.destinations.is_empty() {
             return Err(AppError::config(

@@ -141,7 +141,37 @@ async fn deliver_and_record(
 
     let started = Instant::now();
     let attempt = job.attempt_count + 1;
-    let response = deliver(client, config, &job, attempt).await;
+    let destination_url = resolve_destination_url(config, &job);
+    if destination_url.from_current_config {
+        if destination_url.url != job.destination_url {
+            if db
+                .update_claimed_job_destination_url(&job, &destination_url.url)
+                .await?
+            {
+                tracing::info!(
+                    delivery_id = %job.id,
+                    event_id = %job.event_id,
+                    destination = %job.destination_name,
+                    previous_destination_url = %job.destination_url,
+                    destination_url = %destination_url.url,
+                    "refreshed delivery job destination URL from current config"
+                );
+            } else {
+                log_lost_lock(&job, "destination-url-refresh");
+                return Ok(());
+            }
+        }
+    } else {
+        tracing::warn!(
+            delivery_id = %job.id,
+            event_id = %job.event_id,
+            destination = %job.destination_name,
+            destination_url = %destination_url.url,
+            "destination missing from current config; using stored delivery job URL"
+        );
+    }
+
+    let response = deliver(client, config, &job, attempt, &destination_url.url).await;
     let duration_ms = elapsed_millis(started);
 
     match response {
@@ -187,6 +217,7 @@ async fn deliver(
     config: &Config,
     job: &ClaimedJob,
     attempt: i32,
+    destination_url: &str,
 ) -> Result<StatusCode, reqwest::Error> {
     let timestamp = OffsetDateTime::now_utc().unix_timestamp().to_string();
     let delivery_id = job.id.to_string();
@@ -204,7 +235,7 @@ async fn deliver(
         .unwrap_or_else(|| "application/json".to_string());
 
     let request = client
-        .post(&job.destination_url)
+        .post(destination_url)
         .header(header::CONTENT_TYPE, content_type)
         .header("x-resend-router-delivery-id", delivery_id)
         .header("x-resend-router-event-id", job.event_id.to_string())
@@ -216,6 +247,25 @@ async fn deliver(
 
     let response = request.send().await?;
     Ok(response.status())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedDestinationUrl {
+    url: String,
+    from_current_config: bool,
+}
+
+fn resolve_destination_url(config: &Config, job: &ClaimedJob) -> ResolvedDestinationUrl {
+    match config.destination_url(&job.destination_name) {
+        Some(url) => ResolvedDestinationUrl {
+            url: url.to_string(),
+            from_current_config: true,
+        },
+        None => ResolvedDestinationUrl {
+            url: job.destination_url.clone(),
+            from_current_config: false,
+        },
+    }
 }
 
 async fn record_failure(
@@ -343,7 +393,15 @@ fn elapsed_millis(started: Instant) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::base_retry_delay_secs;
+    use super::{base_retry_delay_secs, resolve_destination_url};
+    use crate::{
+        config::{Config, DestinationConfig},
+        db::ClaimedJob,
+    };
+    use serde_json::Value;
+    use sqlx::types::Json;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
 
     #[test]
     fn retry_schedule_caps_at_one_hour() {
@@ -351,5 +409,74 @@ mod tests {
         assert_eq!(base_retry_delay_secs(2), 60);
         assert_eq!(base_retry_delay_secs(3), 300);
         assert_eq!(base_retry_delay_secs(99), 3600);
+    }
+
+    #[test]
+    fn resolves_latest_destination_url_by_name() {
+        let config = test_config(vec![DestinationConfig {
+            name: "main-app".to_string(),
+            url: "https://api.example.com/webhooks/resend".to_string(),
+            from_domains: vec!["example.com".to_string()],
+            to_domains: vec![],
+            event_types: vec![],
+            catch_all: false,
+        }]);
+        let job = claimed_job("main-app", "https://app.example.com/webhooks/resend");
+
+        let resolved = resolve_destination_url(&config, &job);
+
+        assert_eq!(resolved.url, "https://api.example.com/webhooks/resend");
+        assert!(resolved.from_current_config);
+    }
+
+    #[test]
+    fn falls_back_to_stored_destination_url_when_destination_is_missing() {
+        let config = test_config(vec![DestinationConfig {
+            name: "other-app".to_string(),
+            url: "https://api.example.com/webhooks/resend".to_string(),
+            from_domains: vec!["example.com".to_string()],
+            to_domains: vec![],
+            event_types: vec![],
+            catch_all: false,
+        }]);
+        let job = claimed_job("main-app", "https://app.example.com/webhooks/resend");
+
+        let resolved = resolve_destination_url(&config, &job);
+
+        assert_eq!(resolved.url, "https://app.example.com/webhooks/resend");
+        assert!(!resolved.from_current_config);
+    }
+
+    fn test_config(destinations: Vec<DestinationConfig>) -> Config {
+        Config {
+            database_url: "postgres://example".to_string(),
+            database_max_connections: 1,
+            server_bind: "127.0.0.1:0".parse().unwrap(),
+            resend_webhook_secret: "whsec_test".to_string(),
+            resend_signature_tolerance_secs: 300,
+            router_signing_secret: "a".repeat(32),
+            destinations,
+            delivery_worker_count: 1,
+            delivery_claim_limit: 1,
+            delivery_timeout_secs: 20,
+            retry_window_secs: 60,
+            warn_after_attempts: 10,
+            stale_delivery_lock_secs: 300,
+            worker_drain_timeout_secs: 30,
+        }
+    }
+
+    fn claimed_job(destination_name: &str, destination_url: &str) -> ClaimedJob {
+        ClaimedJob {
+            id: Uuid::new_v4(),
+            event_id: Uuid::new_v4(),
+            destination_name: destination_name.to_string(),
+            destination_url: destination_url.to_string(),
+            attempt_count: 0,
+            deadline_at: OffsetDateTime::now_utc(),
+            locked_by: "worker".to_string(),
+            raw_body: Vec::new(),
+            headers: Json(Value::Object(Default::default())),
+        }
     }
 }

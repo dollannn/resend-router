@@ -163,6 +163,31 @@ impl Db {
         Ok(jobs)
     }
 
+    pub async fn update_claimed_job_destination_url(
+        &self,
+        job: &ClaimedJob,
+        destination_url: &str,
+    ) -> AppResult<bool> {
+        let update_result = sqlx::query(
+            r#"
+            UPDATE delivery_jobs
+            SET
+                destination_url = $2,
+                updated_at = now()
+            WHERE id = $1
+              AND locked_by = $3
+              AND status = 'delivering'
+            "#,
+        )
+        .bind(job.id)
+        .bind(destination_url)
+        .bind(&job.locked_by)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(update_result.rows_affected() > 0)
+    }
+
     pub async fn record_success(
         &self,
         job: &ClaimedJob,
