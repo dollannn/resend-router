@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 const IDLE_SLEEP: StdDuration = StdDuration::from_secs(1);
 const MAX_RETRY_DELAY_SECS: u64 = 60 * 60;
+const USER_AGENT: &str = concat!("resend-router/", env!("CARGO_PKG_VERSION"));
 
 pub async fn run_worker(
     db: Db,
@@ -184,6 +185,7 @@ async fn deliver_and_record(
                     delivery_id = %job.id,
                     event_id = %job.event_id,
                     destination = %job.destination_name,
+                    destination_url = %destination_url.url,
                     attempt,
                     status = status.as_u16(),
                     duration_ms,
@@ -198,6 +200,7 @@ async fn deliver_and_record(
                 db,
                 config,
                 &job,
+                &destination_url.url,
                 Some(status.as_u16()),
                 Some(format!("destination returned HTTP {}", status.as_u16())),
                 duration_ms,
@@ -205,7 +208,16 @@ async fn deliver_and_record(
             .await?;
         }
         Err(error) => {
-            record_failure(db, config, &job, None, Some(error.to_string()), duration_ms).await?;
+            record_failure(
+                db,
+                config,
+                &job,
+                &destination_url.url,
+                None,
+                Some(error.to_string()),
+                duration_ms,
+            )
+            .await?;
         }
     }
 
@@ -237,6 +249,7 @@ async fn deliver(
     let request = client
         .post(destination_url)
         .header(header::CONTENT_TYPE, content_type)
+        .header(header::USER_AGENT, USER_AGENT)
         .header("x-resend-router-delivery-id", delivery_id)
         .header("x-resend-router-event-id", job.event_id.to_string())
         .header("x-resend-router-attempt", attempt.to_string())
@@ -272,6 +285,7 @@ async fn record_failure(
     db: &Db,
     config: &Config,
     job: &ClaimedJob,
+    destination_url: &str,
     status_code: Option<u16>,
     error: Option<String>,
     duration_ms: i64,
@@ -291,6 +305,7 @@ async fn record_failure(
             delivery_id = %job.id,
             event_id = %job.event_id,
             destination = %job.destination_name,
+            destination_url,
             attempt,
             status = status_code,
             error = error_message,
@@ -326,6 +341,7 @@ async fn record_failure(
             delivery_id = %job.id,
             event_id = %job.event_id,
             destination = %job.destination_name,
+            destination_url,
             attempt,
             status = status_code,
             error = error_message,
@@ -339,6 +355,7 @@ async fn record_failure(
             delivery_id = %job.id,
             event_id = %job.event_id,
             destination = %job.destination_name,
+            destination_url,
             attempt,
             status = status_code,
             next_attempt_at = %next_attempt_at,
